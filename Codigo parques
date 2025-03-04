@@ -1,0 +1,396 @@
+import pygame
+import sys
+import random
+import time
+
+# ======================================================
+# FUNCIONES PARA POSICIONES (EXTERNAS Y HOME)
+# ======================================================
+def get_board_position(start, steps_traveled):
+    """Retorna la casilla del circuito externo (1 a 68) a partir de la casilla de salida y los pasos recorridos."""
+    if isinstance(start, str) and start.lower() == "cárcel":
+        print(f"Advertencia: start='{start}' se cambió a 1.")
+        s = 1
+    else:
+        try:
+            s = int(start)
+        except ValueError:
+            print(f"Advertencia: start='{start}' no convertible. Se usará 1 por defecto.")
+            s = 1
+    return ((s - 1 + int(steps_traveled)) % 68) + 1
+
+def get_home_position(team, home_steps):
+    """Retorna la casilla de home (cielo) según el equipo y la cantidad de pasos en el tramo home (1 a 8)."""
+    home_mapping = {
+        "Rojo":    [101, 102, 103, 104, 105, 106, 107, 108],
+        "Verde":   [111, 112, 113, 114, 115, 116, 117, 118],
+        "Azul":    [121, 122, 123, 124, 125, 126, 127, 128],
+        "Amarillo":[131, 132, 133, 134, 135, 136, 137, 138]
+    }
+    if team in home_mapping and 1 <= home_steps <= 8:
+        return home_mapping[team][home_steps-1]
+    return 0
+
+def get_current_position(piece):
+    """Retorna la posición actual de la ficha, ya sea en el circuito externo o en el tramo home."""
+    if piece.steps_traveled <= 68:
+        return get_board_position(piece.start, piece.steps_traveled)
+    else:
+        home_steps = piece.steps_traveled - 68
+        return get_home_position(piece.team, home_steps)
+
+# ======================================================
+# 1. LÓGICA DEL JUEGO
+# ======================================================
+class Board:
+    def __init__(self):
+        self.external_cells = list(range(1, 69))
+        self.cells = {cell: [] for cell in self.external_cells}
+        # Agregamos casillas de home para cada equipo.
+        self.home_cells = {
+            "Rojo":    [101,102,103,104,105,106,107,108],
+            "Verde":   [111,112,113,114,115,116,117,118],
+            "Azul":    [121,122,123,124,125,126,127,128],
+            "Amarillo":[131,132,133,134,135,136,137,138]
+        }
+        for team, cell_list in self.home_cells.items():
+            for c in cell_list:
+                self.cells[c] = []
+        self.safe_cells = [5, 12, 17, 24, 29, 36, 41, 48, 53, 60, 65]
+        self.start_positions = {}
+
+class Piece:
+    def __init__(self, team, id):
+        self.team = team
+        self.id = id
+        self.position = "cárcel"   # Comienza en la cárcel.
+        self.finished = False      # Se marca True al llegar a la meta final (76 pasos).
+        self.in_jail = True
+        self.steps_traveled = 0    # Contador de pasos totales.
+        self.start = None          # Se asigna la casilla de salida.
+
+    def __str__(self):
+        return f"{self.team}-{self.id}"
+
+class Player:
+    def __init__(self, team, start_cell):
+        self.team = team
+        self.start_cell = start_cell
+        self.pieces = [Piece(team, i+1) for i in range(4)]
+        for p in self.pieces:
+            p.start = start_cell
+        self.in_jail = self.pieces[:]       # Todas inician en la cárcel.
+        self.on_board = []                  # Fichas que han salido.
+        self.finished_pieces = []           # Fichas que han llegado a la meta.
+
+    def all_finished(self):
+        return len(self.finished_pieces) == len(self.pieces)
+
+class Game:
+    def __init__(self, mode="real"):
+        self.board = Board()
+        self.players = []
+        self.current_player_index = 0
+        self.mode = mode  # "real" o "desarrollador"
+        self.game_over = False
+        self.consecutive_doubles = 0
+        self.setup_players()
+
+    def setup_players(self):
+        # Ejemplo: Rojo en 1, Verde en 18, Azul en 35, Amarillo en 52.
+        teams = [("Rojo", 1), ("Verde", 18), ("Azul", 35), ("Amarillo", 52)]
+        for team, start in teams:
+            player = Player(team, start)
+            self.players.append(player)
+            self.board.start_positions[team] = start
+
+    def roll_dice(self):
+        if self.mode == "real":
+            return random.randint(1,6), random.randint(1,6)
+        else:
+            d1 = int(input("Ingrese dado 1: "))
+            d2 = int(input("Ingrese dado 2: "))
+            return d1, d2
+
+    def choose_piece(self, player):
+        if len(player.on_board) > 1:
+            print("Fichas disponibles para mover:")
+            for idx, p in enumerate(player.on_board):
+                current_cell = get_current_position(p)
+                print(f"{idx+1}) {p} - Pasos: {p.steps_traveled} (Posición: {current_cell})")
+            try:
+                choice = int(input("Elige la ficha a mover (número): "))
+                if 1 <= choice <= len(player.on_board):
+                    return player.on_board[choice-1]
+            except:
+                print("Opción inválida, se moverá la primera ficha.")
+        if player.on_board:
+            return player.on_board[0]
+        return None
+
+    def try_remove_from_jail(self, player, move_value):
+        salida = get_board_position(player.start_cell, 0)
+        if len(self.board.cells[salida]) >= 2:
+            print(f"La casilla de salida (casilla {salida}) ya tiene 2 fichas. Debes mover alguna ficha para liberar espacio.")
+            return False
+        piece = player.in_jail.pop(0)
+        piece.in_jail = False
+        piece.steps_traveled = 0
+        piece.start = player.start_cell
+        piece.position = get_board_position(piece.start, 0)
+        player.on_board.append(piece)
+        self.board.cells[get_board_position(piece.start, 0)].append(piece)
+        print(f"{player.team} saca la ficha {piece} de la cárcel a la casilla {piece.position}")
+        return True
+
+    def try_move_single(self, player, move_value):
+        if not player.on_board:
+            print("No hay fichas en el tablero para mover.")
+            return False
+        piece = self.choose_piece(player)
+        if piece is None:
+            print("No se seleccionó ficha. No se mueve nada.")
+            return False
+        old_steps = piece.steps_traveled
+        if old_steps == 75:
+            if move_value == 1:
+                new_steps = 76
+            else:
+                print(f"{piece} necesita 1 para ganar, pero se obtuvo {move_value}.")
+                return False
+        else:
+            new_steps = old_steps + move_value
+        if new_steps > 76:
+            print(f"Movimiento inválido para {piece}: {new_steps} excede el máximo de 76.")
+            return False
+        piece.steps_traveled = new_steps
+        if new_steps <= 68:
+            new_position = get_board_position(piece.start, new_steps)
+        else:
+            new_position = get_home_position(piece.team, new_steps - 68)
+        piece.position = new_position
+        if old_steps != 0:
+            if old_steps <= 68:
+                old_cell = get_board_position(piece.start, old_steps)
+            else:
+                old_cell = get_home_position(piece.team, old_steps - 68)
+            if piece in self.board.cells[old_cell]:
+                self.board.cells[old_cell].remove(piece)
+        self.board.cells[new_position].append(piece)
+        print(f"Mueve {piece} de {old_steps} a {new_steps} pasos (Posición: {new_position}).")
+        if new_steps == 76:
+            print(f"🏆 {piece} completó 76 pasos y llegó a la meta final.")
+            piece.finished = True
+            player.finished_pieces.append(piece)
+            player.on_board.remove(piece)
+            if player.all_finished():
+                print(f"🏆 ¡El equipo {player.team} gana el juego!")
+                self.game_over = True
+        return True
+
+    def play_turn(self):
+        if self.game_over:
+            return None, 0
+        player = self.players[self.current_player_index]
+        print(f"\nTurno del equipo {player.team}")
+        d1, d2 = self.roll_dice()
+        print(f"Dados obtenidos: {d1} y {d2}")
+        # Manejo de dobles.
+        if d1 == d2:
+            self.consecutive_doubles += 1
+            print("¡Dado doble!")
+        else:
+            self.consecutive_doubles = 0
+        if self.consecutive_doubles == 3:
+            print("Tres dobles consecutivos. Penalización.")
+            if player.on_board:
+                piece = player.on_board[0]
+                piece.position = "cárcel"
+                piece.in_jail = True
+                piece.steps_traveled = 0
+                player.on_board.remove(piece)
+                player.in_jail.append(piece)
+                print(f"La ficha {piece} vuelve a la cárcel.")
+            else:
+                print("Tres dobles consecutivos, pero no hay ficha para penalizar.")
+            self.consecutive_doubles = 0
+            self.current_player_index = (self.current_player_index + 1) % len(self.players)
+            return None, 0
+
+        move_made = False
+        # Si hay fichas en la cárcel y se cumple la condición de 5, SOLO se saca UNA ficha.
+        if player.in_jail and (d1 == 5 or d2 == 5 or d1 + d2 == 5):
+            if self.try_remove_from_jail(player, d1 if d1==5 else d2):
+                move_made = True
+        else:
+            # Procesamos cada dado por separado para mover fichas ya en juego.
+            if self.try_move_single(player, d1):
+                move_made = True
+            if self.try_move_single(player, d2):
+                move_made = True
+
+        if not move_made:
+            print("No se pudo mover ninguna ficha con los dados.")
+        if d1 != d2:
+            self.consecutive_doubles = 0
+            self.current_player_index = (self.current_player_index + 1) % len(self.players)
+        else:
+            print("Dado doble: el mismo jugador repite turno.")
+        return None, 0
+
+# ======================================================
+# VISUALIZACIÓN CON PYGAME (REJILLA)
+# ======================================================
+class VisualGame:
+    def __init__(self, game):
+        self.game = game
+        pygame.init()
+        self.WIDTH, self.HEIGHT = 900, 600
+        self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+        pygame.display.set_caption("Parqués Visual - Cielo (Home)")
+        self.clock = pygame.time.Clock()
+        self.cell_width = 50
+        self.cell_height = 50
+        self.margin = 5
+        self.home_cells_in_visual = {
+            101: (600,  50), 102: (600, 100), 103: (600, 150), 104: (600, 200),
+            105: (600, 250), 106: (600, 300), 107: (600, 350), 108: (600, 400),
+
+            111: (650,  50), 112: (650, 100), 113: (650, 150), 114: (650, 200),
+            115: (650, 250), 116: (650, 300), 117: (650, 350), 118: (650, 400),
+
+            121: (100, 450), 122: (150, 450), 123: (200, 450), 124: (250, 450),
+            125: (300, 450), 126: (350, 450), 127: (400, 450), 128: (450, 450),
+
+            131: (100, 500), 132: (150, 500), 133: (200, 500), 134: (250, 500),
+            135: (300, 500), 136: (350, 500), 137: (400, 500), 138: (450, 500)
+        }
+
+    def get_cell_coordinates(self, cell):
+        if 1 <= cell <= 68:
+            index = cell - 1
+            col = index % 10
+            row = index // 10
+            x = self.margin + col * (self.cell_width + self.margin)
+            y = self.margin + row * (self.cell_height + self.margin)
+            return x, y
+        elif cell in self.home_cells_in_visual:
+            return self.home_cells_in_visual[cell]
+        else:
+            return (0,0)
+
+    def draw_board(self):
+        self.screen.fill((50, 50, 50))
+        # Dibujar casillas externas.
+        for cell in self.game.board.external_cells:
+            x, y = self.get_cell_coordinates(cell)
+            rect = pygame.Rect(x, y, self.cell_width, self.cell_height)
+            color = (200, 200, 200)
+            if cell in self.game.board.safe_cells:
+                color = (173, 216, 230)
+            pygame.draw.rect(self.screen, color, rect)
+            pygame.draw.rect(self.screen, (0,0,0), rect, 2)
+            font = pygame.font.SysFont(None, 18)
+            # Mostrar etiquetas para salida y seguro.
+            label = ""
+            for team, start in self.game.board.start_positions.items():
+                if get_board_position(start, 0) == cell:
+                    label = f"Salida {team}"
+                    break
+            if cell in self.game.board.safe_cells:
+                label = "Seguro"
+            if label == "":
+                label = str(cell)
+            text = font.render(label, True, (0,0,0))
+            self.screen.blit(text, (x+2, y+2))
+        # Dibujar casillas de home.
+        for cell, (px, py) in self.home_cells_in_visual.items():
+            rect = pygame.Rect(px, py, self.cell_width, self.cell_height)
+            color = (230, 230, 150)
+            pygame.draw.rect(self.screen, color, rect)
+            pygame.draw.rect(self.screen, (0,0,0), rect, 2)
+            font = pygame.font.SysFont(None, 18)
+            text = font.render(str(cell), True, (0,0,0))
+            self.screen.blit(text, (px+2, py+2))
+
+    def get_team_color(self, team):
+        colors = {
+            "Rojo": (255, 0, 0),
+            "Verde": (0, 255, 0),
+            "Azul": (0, 0, 255),
+            "Amarillo": (255, 255, 0)
+        }
+        return colors.get(team, (255, 255, 255))
+
+    def draw_pieces(self):
+        font = pygame.font.SysFont(None, 24)
+        for player in self.game.players:
+            for piece in player.pieces:
+                if piece.in_jail:
+                    continue
+                current_cell = get_current_position(piece)
+                x, y = self.get_cell_coordinates(current_cell)
+                center = (x + self.cell_width//2, y + self.cell_height//2)
+                color = self.get_team_color(player.team)
+                pygame.draw.circle(self.screen, color, center, 15)
+                text = font.render(str(piece.id), True, (255, 255, 255))
+                text_rect = text.get_rect(center=center)
+                self.screen.blit(text, text_rect)
+
+    def animate_piece(self, movement, duration=500):
+        if not movement:
+            return
+        piece = movement["piece"]
+        old_steps = movement["old"]
+        new_steps = movement["new"]
+        if old_steps == 0:
+            return
+        if old_steps <= 68:
+            old_cell = get_board_position(piece.start, old_steps)
+        else:
+            old_cell = get_home_position(piece.team, old_steps - 68)
+        if new_steps <= 68:
+            new_cell = get_board_position(piece.start, new_steps)
+        else:
+            new_cell = get_home_position(piece.team, new_steps - 68)
+        start_x, start_y = self.get_cell_coordinates(old_cell)
+        end_x, end_y = self.get_cell_coordinates(new_cell)
+        steps = 30
+        delta_x = (end_x - start_x) / steps
+        delta_y = (end_y - start_y) / steps
+        for step in range(steps):
+            self.draw_board()
+            self.draw_pieces()
+            current_x = start_x + delta_x * step
+            current_y = start_y + delta_y * step
+            pygame.draw.circle(self.screen, self.get_team_color(piece.team),
+                               (int(current_x + self.cell_width//2), int(current_y + self.cell_height//2)), 15)
+            pygame.display.flip()
+            pygame.time.delay(duration // steps)
+            self.clock.tick(60)
+
+    def run(self):
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_SPACE:
+                        movement, _ = self.game.play_turn()
+                        if movement:
+                            self.animate_piece(movement)
+                        time.sleep(0.5)
+                        if self.game.game_over:
+                            running = False
+            self.draw_board()
+            self.draw_pieces()
+            pygame.display.flip()
+            self.clock.tick(60)
+        pygame.quit()
+
+if __name__ == "__main__":
+    mode = input("Seleccione modo (real/desarrollador): ").strip().lower()
+    game = Game(mode=mode)
+    visual = VisualGame(game)
+    visual.run()
